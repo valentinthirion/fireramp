@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<title>Rampe pompiers</title>
+<title>Roue de la chance</title>
 <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;700&display=swap" rel="stylesheet">
 <style>
   :root{
@@ -17,97 +17,256 @@
   html,body{height:100%}
   body{background:var(--console);color:var(--text);
     font-family:"Barlow Condensed","Arial Narrow",Arial,sans-serif;
-    display:flex;flex-direction:column;padding:16px;gap:14px;
+    display:flex;flex-direction:column;align-items:center;padding:16px;gap:16px;
     -webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent}
-  header{display:flex;justify-content:space-between;align-items:center}
+  header{width:100%;display:flex;justify-content:space-between;align-items:center;gap:12px}
   h1{font-size:1.75rem;font-weight:700;letter-spacing:.02em}
+  .right{display:flex;align-items:center;gap:10px}
   .link{display:flex;align-items:center;gap:8px;font-size:1.05rem;color:var(--dim)}
   .led{width:10px;height:10px;border-radius:50%;background:var(--edge)}
   .link.on .led{background:var(--ok);box-shadow:0 0 8px var(--ok)}
   .link.on{color:var(--text)}
   button{font:inherit;color:inherit;border:0;cursor:pointer}
   button:focus-visible{outline:2px solid var(--amber);outline-offset:3px}
-  #connect{background:var(--amber);color:#fff;font-size:1.3rem;font-weight:700;
-    padding:14px;border-radius:10px}
+  #connect{background:none;border:2px solid var(--edge);border-radius:8px;
+    padding:6px 10px;font-size:1rem;color:var(--dim)}
   #connect.hidden{display:none}
-  #power{flex:1;background:var(--panel);border:2px solid var(--edge);border-radius:18px;
-    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:22px;
-    font-size:2rem;font-weight:700;transition:border-color .15s}
-  .lamp{width:120px;height:120px;border-radius:50%;background:#3a2a22;
-    border:4px solid #4a3a30;transition:background .15s, box-shadow .15s}
-  #power[aria-pressed="true"]{border-color:var(--amber)}
-  #power[aria-pressed="true"] .lamp{background:var(--amber);box-shadow:0 0 40px var(--amber)}
-  #msg{text-align:center;color:var(--dim);font-size:1rem;min-height:1.2em}
-  .disabled{opacity:.4;pointer-events:none}
-  @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+
+  .stage{position:relative;width:min(92vw,58vh);aspect-ratio:1;flex-shrink:0;margin-top:8px}
+  #wheel{width:100%;height:100%;display:block;transition:filter .2s}
+  .stage.win #wheel{filter:drop-shadow(0 0 22px var(--amber))}
+  .pointer{position:absolute;top:-10px;left:50%;transform:translateX(-50%);
+    width:0;height:0;border-left:17px solid transparent;border-right:17px solid transparent;
+    border-top:32px solid var(--text)}
+
+  #spin{width:100%;max-width:420px;background:var(--amber);color:#fff;
+    font-size:1.7rem;font-weight:700;padding:16px;border-radius:12px}
+  #spin:disabled{opacity:.45}
+  #result{font-size:2.2rem;font-weight:700;min-height:1.2em;text-align:center}
+  #result.win{color:var(--amber)}
+  #msg{color:var(--dim);font-size:1rem;min-height:1.2em;text-align:center}
 </style>
 </head>
 <body>
 <header>
-  <h1>Rampe pompiers</h1>
-  <div class="link" id="link"><span class="led"></span><span id="linkTxt">Déconnecté</span></div>
+  <h1>Roue de la chance</h1>
+  <div class="right">
+    <div class="link" id="link"><span class="led"></span><span id="linkTxt">Rampe</span></div>
+    <button id="connect">Connecter</button>
+  </div>
 </header>
 
-<button id="connect">Se connecter à la rampe</button>
+<div class="stage" id="stage">
+  <svg id="wheel" viewBox="0 0 200 200" role="img" aria-label="Roue de la chance"></svg>
+  <div class="pointer" aria-hidden="true"></div>
+</div>
 
-<button id="power" class="disabled" aria-pressed="false">
-  <span class="lamp"></span><span id="powerTxt">Rampe éteinte</span>
-</button>
-
+<button id="spin">Tourner la roue</button>
+<p id="result" aria-live="polite"></p>
 <p id="msg"></p>
 
 <script>
+/* ===== RÉGLAGES DU JEU — à modifier ici ===== */
+const OPTIONS = [
+  { label: "Lot 1",    win: true  },
+  { label: "Perdu",    win: false },
+  { label: "Lot 2",    win: true  },
+  { label: "Rejouez",  win: false },
+  { label: "Lot 3",    win: true  },
+  { label: "Perdu",    win: false },
+  { label: "Gros lot", win: true  },
+  { label: "Rejouez",  win: false },
+];
+const LAMP_SECONDS = 8;   // durée d'allumage de la rampe sur une case gagnante
+const SPIN_SECONDS = 5;   // durée de rotation de la roue
+/* ============================================ */
+
 // Doivent correspondre exactement au programme de l'ESP32
 const SERVICE = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
 const CHAR    = "beb5483e-36e1-4688-b7f5-ea07361b26a8";
 
-let chr = null, on = false, busy = Promise.resolve();
 const $ = id => document.getElementById(id);
 const msg = t => $("msg").textContent = t || "";
+const NS = "http://www.w3.org/2000/svg";
+const N = OPTIONS.length, SEG = 360 / N, C = 100, R = 96;
 
-function render(){
-  $("power").setAttribute("aria-pressed", on);
-  $("powerTxt").textContent = on ? "Rampe allumée" : "Rampe éteinte";
+/* ---------- Dessin de la roue ---------- */
+const svg = $("wheel");
+const el = (tag, attrs, parent) => {
+  const e = document.createElementNS(NS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  (parent || svg).appendChild(e);
+  return e;
+};
+const pt = (a, r) => {
+  const rad = a * Math.PI / 180;
+  return [C + r * Math.sin(rad), C - r * Math.cos(rad)];
+};
+function segColor(i){
+  if (N % 2 && i === N - 1) return "#5A544E";
+  return i % 2 ? "#2D2A27" : "#FF4E1C";
 }
+
+const rotor = el("g", { id: "rotor" });
+OPTIONS.forEach((o, i) => {
+  const a0 = i * SEG, a1 = a0 + SEG;
+  const [x0, y0] = pt(a0, R), [x1, y1] = pt(a1, R);
+  el("path", {
+    d: `M${C} ${C} L${x0} ${y0} A${R} ${R} 0 ${SEG > 180 ? 1 : 0} 1 ${x1} ${y1} Z`,
+    fill: segColor(i), stroke: "#1E1C1A", "stroke-width": 1
+  }, rotor);
+  const g = el("g", { transform: `rotate(${a0 + SEG / 2} ${C} ${C})` }, rotor);
+  const ty = C - R * 0.6;
+  const t = el("text", {
+    x: C, y: ty, transform: `rotate(90 ${C} ${ty})`,
+    "text-anchor": "middle", "dominant-baseline": "middle",
+    fill: "#fff", "font-size": 13, "font-weight": 700,
+    "font-family": "Barlow Condensed, Arial Narrow, Arial, sans-serif"
+  }, g);
+  t.textContent = o.label;
+  const [px, py] = pt(a0, R - 5);
+  el("circle", { cx: px, cy: py, r: 2.2, fill: "#EDE8E3" }, rotor);
+});
+el("circle", { cx: C, cy: C, r: R, fill: "none", stroke: "#3E3A36", "stroke-width": 3 });
+el("circle", { cx: C, cy: C, r: 17, fill: "#2D2A27", stroke: "#3E3A36", "stroke-width": 2 });
+const hub = el("circle", { cx: C, cy: C, r: 10, fill: "#3a2a22" });
+
+/* ---------- Sons (générés, aucun fichier) ---------- */
+let ac = null;
+function unlockAudio(){
+  try { if (navigator.audioSession) navigator.audioSession.type = "playback"; } catch(e){}
+  if (!ac){
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (AC) ac = new AC();
+  }
+  if (ac && ac.state === "suspended") ac.resume();
+}
+function tone(freq, start, dur, type, vol){
+  if (!ac) return;
+  const o = ac.createOscillator(), g = ac.createGain();
+  o.type = type; o.frequency.value = freq;
+  g.gain.setValueAtTime(0, start);
+  g.gain.linearRampToValueAtTime(vol, start + 0.02);
+  g.gain.setValueAtTime(vol, start + dur - 0.04);
+  g.gain.linearRampToValueAtTime(0, start + dur);
+  o.connect(g).connect(ac.destination);
+  o.start(start); o.stop(start + dur + 0.05);
+}
+function tick(){
+  if (!ac) return;
+  const t = ac.currentTime, o = ac.createOscillator(), g = ac.createGain();
+  o.type = "square"; o.frequency.value = 1800;
+  g.gain.setValueAtTime(0.08, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + 0.04);
+  o.connect(g).connect(ac.destination);
+  o.start(t); o.stop(t + 0.05);
+}
+function playWin(){            // deux tons façon pompiers
+  if (!ac) return;
+  const t = ac.currentTime + 0.05;
+  for (let k = 0; k < 4; k++){
+    tone(435, t + k, 0.5, "triangle", 0.35);
+    tone(488, t + k + 0.5, 0.5, "triangle", 0.35);
+  }
+}
+function playLose(){
+  if (!ac) return;
+  const t = ac.currentTime + 0.05;
+  tone(330, t, 0.25, "triangle", 0.3);
+  tone(247, t + 0.28, 0.45, "triangle", 0.3);
+}
+
+/* ---------- Bluetooth (optionnel : le jeu marche sans) ---------- */
+let chr = null, busy = Promise.resolve();
 function setConnected(c){
   $("link").classList.toggle("on", c);
-  $("linkTxt").textContent = c ? "Connecté" : "Déconnecté";
+  $("linkTxt").textContent = c ? "Rampe connectée" : "Rampe";
   $("connect").classList.toggle("hidden", c);
-  $("power").classList.toggle("disabled", !c);
 }
 function send(value){
-  // file d'attente : iOS refuse deux écritures simultanées
-  busy = busy.then(async ()=>{
-    if(!chr) return;
-    try{ await chr.writeValue(new TextEncoder().encode(value)); }
+  busy = busy.then(async () => {
+    if (!chr) return;
+    try { await chr.writeValue(new TextEncoder().encode(value)); }
     catch(e){ msg("Commande non envoyée : " + e.message); }
   });
 }
-
-$("connect").onclick = async ()=>{
-  if(!navigator.bluetooth){
+$("connect").onclick = async () => {
+  unlockAudio();
+  if (!navigator.bluetooth){
     msg("Bluetooth indisponible dans ce navigateur. Sur iPhone, ouvrez cette page dans Bluefy.");
     return;
   }
   try{
     msg("Recherche de la rampe…");
-    const device = await navigator.bluetooth.requestDevice({ filters:[{ services:[SERVICE] }] });
-    device.addEventListener("gattserverdisconnected", ()=>{
-      chr = null; setConnected(false); msg("Connexion perdue. Appuyez sur Se connecter.");
+    const device = await navigator.bluetooth.requestDevice({ filters: [{ services: [SERVICE] }] });
+    device.addEventListener("gattserverdisconnected", () => {
+      chr = null; setConnected(false); msg("Rampe déconnectée. Le jeu continue sans lumière.");
     });
     const server = await device.gatt.connect();
-    const svc = await server.getPrimaryService(SERVICE);
-    chr = await svc.getCharacteristic(CHAR);
-    // Au démarrage de l'ESP32 la rampe est éteinte : on part de cet état
-    on = false; render(); setConnected(true); msg("");
+    chr = await (await server.getPrimaryService(SERVICE)).getCharacteristic(CHAR);
+    send("0");
+    setConnected(true); msg("");
   }catch(e){
     msg(e.name === "NotFoundError" ? "Aucune rampe sélectionnée." : "Connexion impossible : " + e.message);
   }
 };
 
-$("power").onclick = ()=>{
-  on = !on; render(); send(on ? "1" : "0");
-};
+/* ---------- Rampe ---------- */
+let lampOn = false, lampTimer = null;
+function lamp(on){
+  clearTimeout(lampTimer);
+  lampOn = on;
+  hub.setAttribute("fill", on ? "#FF4E1C" : "#3a2a22");
+  $("stage").classList.toggle("win", on);
+  send(on ? "1" : "0");
+  if (on) lampTimer = setTimeout(() => lamp(false), LAMP_SECONDS * 1000);
+}
+
+/* ---------- Rotation ---------- */
+let angle = 0, spinning = false;
+const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+function setResult(text, win){
+  $("result").textContent = text;
+  $("result").classList.toggle("win", !!win);
+}
+function spin(){
+  if (spinning) return;
+  unlockAudio();
+  if (lampOn) lamp(false);
+  spinning = true; $("spin").disabled = true; setResult("");
+
+  const idx = Math.floor(Math.random() * N);
+  const jitter = (Math.random() - 0.5) * SEG * 0.7;
+  const target = ((360 - (idx * SEG + SEG / 2 + jitter)) % 360 + 360) % 360;
+  const current = ((angle % 360) + 360) % 360;
+  let delta = target - current; if (delta < 0) delta += 360;
+  const total = delta + 360 * (5 + Math.floor(Math.random() * 2));
+  const start = angle, t0 = performance.now();
+  const dur = (reduced ? 1.5 : SPIN_SECONDS) * 1000;
+  let lastSeg = Math.floor(start / SEG);
+
+  function frame(now){
+    const t = Math.min(1, (now - t0) / dur);
+    const e = 1 - Math.pow(1 - t, 4);
+    angle = start + total * e;
+    rotor.setAttribute("transform", `rotate(${angle} ${C} ${C})`);
+    const s = Math.floor(angle / SEG);
+    if (s !== lastSeg){ lastSeg = s; tick(); }
+    if (t < 1) requestAnimationFrame(frame);
+    else finish(idx);
+  }
+  requestAnimationFrame(frame);
+}
+function finish(idx){
+  const o = OPTIONS[idx];
+  setResult(o.label, o.win);
+  if (o.win){ playWin(); lamp(true); }
+  else playLose();
+  setTimeout(() => { spinning = false; $("spin").disabled = false; }, 1200);
+}
+$("spin").onclick = spin;
+$("wheel").onclick = spin;
 </script>
 </body>
 </html>
