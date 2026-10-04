@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Rampe pompiers</title>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --console:#1E1C1A; --panel:#2D2A27; --edge:#3E3A36; --text:#EDE8E3; --dim:#8C857E;
+    --amber:#FF4E1C; --ok:#4CC38A;
+    box-sizing:border-box;
+    padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px);
+  }
+  *{box-sizing:inherit;margin:0}
+  html,body{height:100%}
+  body{background:var(--console);color:var(--text);
+    font-family:"Barlow Condensed","Arial Narrow",Arial,sans-serif;
+    display:flex;flex-direction:column;padding:16px;gap:14px;
+    -webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent}
+  header{display:flex;justify-content:space-between;align-items:center}
+  h1{font-size:1.75rem;font-weight:700;letter-spacing:.02em}
+  .link{display:flex;align-items:center;gap:8px;font-size:1.05rem;color:var(--dim)}
+  .led{width:10px;height:10px;border-radius:50%;background:var(--edge)}
+  .link.on .led{background:var(--ok);box-shadow:0 0 8px var(--ok)}
+  .link.on{color:var(--text)}
+  button{font:inherit;color:inherit;border:0;cursor:pointer}
+  button:focus-visible{outline:2px solid var(--amber);outline-offset:3px}
+  #connect{background:var(--amber);color:#fff;font-size:1.3rem;font-weight:700;
+    padding:14px;border-radius:10px}
+  #connect.hidden{display:none}
+  #power{flex:1;background:var(--panel);border:2px solid var(--edge);border-radius:18px;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:22px;
+    font-size:2rem;font-weight:700;transition:border-color .15s}
+  .lamp{width:120px;height:120px;border-radius:50%;background:#3a2a22;
+    border:4px solid #4a3a30;transition:background .15s, box-shadow .15s}
+  #power[aria-pressed="true"]{border-color:var(--amber)}
+  #power[aria-pressed="true"] .lamp{background:var(--amber);box-shadow:0 0 40px var(--amber)}
+  #msg{text-align:center;color:var(--dim);font-size:1rem;min-height:1.2em}
+  .disabled{opacity:.4;pointer-events:none}
+  @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<header>
+  <h1>Rampe pompiers</h1>
+  <div class="link" id="link"><span class="led"></span><span id="linkTxt">Déconnecté</span></div>
+</header>
+
+<button id="connect">Se connecter à la rampe</button>
+
+<button id="power" class="disabled" aria-pressed="false">
+  <span class="lamp"></span><span id="powerTxt">Rampe éteinte</span>
+</button>
+
+<p id="msg"></p>
+
+<script>
+// Doivent correspondre exactement au programme de l'ESP32
+const SERVICE = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
+const CHAR    = "beb5483e-36e1-4688-b7f5-ea07361b26a8";
+
+let chr = null, on = false, busy = Promise.resolve();
+const $ = id => document.getElementById(id);
+const msg = t => $("msg").textContent = t || "";
+
+function render(){
+  $("power").setAttribute("aria-pressed", on);
+  $("powerTxt").textContent = on ? "Rampe allumée" : "Rampe éteinte";
+}
+function setConnected(c){
+  $("link").classList.toggle("on", c);
+  $("linkTxt").textContent = c ? "Connecté" : "Déconnecté";
+  $("connect").classList.toggle("hidden", c);
+  $("power").classList.toggle("disabled", !c);
+}
+function send(value){
+  // file d'attente : iOS refuse deux écritures simultanées
+  busy = busy.then(async ()=>{
+    if(!chr) return;
+    try{ await chr.writeValue(new TextEncoder().encode(value)); }
+    catch(e){ msg("Commande non envoyée : " + e.message); }
+  });
+}
+
+$("connect").onclick = async ()=>{
+  if(!navigator.bluetooth){
+    msg("Bluetooth indisponible dans ce navigateur. Sur iPhone, ouvrez cette page dans Bluefy.");
+    return;
+  }
+  try{
+    msg("Recherche de la rampe…");
+    const device = await navigator.bluetooth.requestDevice({ filters:[{ services:[SERVICE] }] });
+    device.addEventListener("gattserverdisconnected", ()=>{
+      chr = null; setConnected(false); msg("Connexion perdue. Appuyez sur Se connecter.");
+    });
+    const server = await device.gatt.connect();
+    const svc = await server.getPrimaryService(SERVICE);
+    chr = await svc.getCharacteristic(CHAR);
+    // Au démarrage de l'ESP32 la rampe est éteinte : on part de cet état
+    on = false; render(); setConnected(true); msg("");
+  }catch(e){
+    msg(e.name === "NotFoundError" ? "Aucune rampe sélectionnée." : "Connexion impossible : " + e.message);
+  }
+};
+
+$("power").onclick = ()=>{
+  on = !on; render(); send(on ? "1" : "0");
+};
+</script>
+</body>
+</html>
